@@ -1,35 +1,33 @@
 # Fitness Calendar
 
-Turns gym class schedules into calendar feeds you can subscribe to (iPhone, macOS, Google Calendar). Supports **FitX** studios and **body + soul** centers. Each subscriber picks the courses they care about and gets their own feed URL. Runs on a Raspberry Pi with Docker.
+Turns gym class schedules into calendar feeds you can subscribe to (iPhone, macOS, Google Calendar). Supports all **FitX** studios and all **body + soul** centers. Each subscriber picks the courses they care about and gets their own feed URL. Runs on a Raspberry Pi with Docker.
 
 ## How it works
-- A background loop scrapes each configured gym every 15 minutes and caches the classes in `/data/<calendar>.json`.
+- Studios are fetched on demand: the first time someone picks a studio (or a calendar app requests its feed), its schedule is scraped and cached in `/data/<calendar>.json`.
+- Once cached data is older than `REFRESH_INTERVAL_SECONDS` (15 min), the next request serves it immediately and re-fetches in the background. Studios nobody uses are never fetched.
 - If a gym's site is down or returns nothing, the last good data keeps being served.
 - Feeds are generated on request, so filtering costs nothing and no per-user state is stored.
 
 ## Using it
 Open the site root (e.g. `https://ics.moraleda.work/` or `http://<pi-ip>:8787/`):
 
-1. Each gym has its own section with a checkbox per course. The search box only narrows the list; it doesn't affect the link.
-2. Tick the courses you want. Nothing ticked = all courses.
-3. Tap the `webcal://` link (or **Copy** it) to subscribe. Changing the ticks gives a new link; the old subscription keeps its old filter.
+1. Pick a studio from the FitX or body + soul dropdown (the choice is remembered in your browser).
+2. Tap the courses you want. Nothing selected = all courses. The search box only narrows the list; it doesn't affect the link.
+3. Tap **Subscribe** (or **Copy link**). Changing the selection gives a new link; an existing subscription keeps its old filter.
 
 ## Endpoints
 - `GET /` – course picker
-- `GET /fitx-<studio-id>.ics` – FitX feed, e.g. `/fitx-53.ics`
-- `GET /bodyandsoul-<center>.ics` – body + soul feed, e.g. `/bodyandsoul-sendling.ics`
+- `GET /fitx-<studio-id>.ics` – FitX feed, e.g. `/fitx-53.ics` (id = `value` of the studio dropdown on [fitx.de/fitnesskurse](https://www.fitx.de/fitnesskurse); 53 = München Sendling-Westpark)
+- `GET /bodyandsoul-<center>.ics` – body + soul feed, e.g. `/bodyandsoul-sendling.ics` (centers listed in `BODYSOUL_CENTERS` in `app/main.py`)
+- `GET /api/courses/<calendar>` – course titles for the picker
 - Add `?course=<title>` (repeatable, exact title) to any feed to include only those courses
 - `GET /health` – `OK`
-- `POST /refresh` – refresh all gyms now (needs `X-Refresh-Token` header if `REFRESH_TOKEN` is set)
 
 ## Configuration (`.env`)
 | Variable | Default | |
 |---|---|---|
-| `FITX_STUDIOS` | `53` | Comma-separated FitX studio ids. Find an id as the `value` of the studio dropdown on [fitx.de/fitnesskurse](https://www.fitx.de/fitnesskurse) (53 = München Sendling-Westpark, 108 = München-Lenbachplatz). Calendar names come from that dropdown. Legacy `FITX_COURSE_ID` is read as fallback. |
-| `BODYSOUL_CENTERS` | `theresienhoehe,sendling` | Comma-separated center slugs from `bodyandsoul.de/standorte/<slug>/kursangebot-center-<slug>`. Empty disables. |
 | `FITX_WEEKS_AHEAD` | `2` | Weeks of FitX classes to fetch (body + soul publishes ~4 weeks; all are used). |
-| `REFRESH_INTERVAL_SECONDS` | `900` | |
-| `REFRESH_TOKEN` | – | Protects `POST /refresh`. Secret. |
+| `REFRESH_INTERVAL_SECONDS` | `900` | Max age of a studio's cached classes before re-fetching. |
 | `FITX_COOKIE` | – | Optional, never logged. Secret. |
 | `CLOUDFLARED_TOKEN` | – | Cloudflare Tunnel token for the `cloudflared` sidecar. Secret. |
 | `PORT` | `8787` | Host port (container always listens on 8787). |
@@ -58,9 +56,8 @@ ssh pi@<pi-ip> 'cd ~/fitx-calendar && git merge --ff-only origin/main && \
 With `CLOUDFLARED_TOKEN` set, the tunnel exposes the app at the public hostname configured in the Cloudflare dashboard (pointing to `http://fitx-calendar:8787`). Without a token, cloudflared falls back to a quick tunnel; find its `https://<random>.trycloudflare.com` URL with `docker logs cloudflared`.
 
 ## Troubleshooting
-- **Gym section empty / feed stale:** check `docker logs fitx-calendar` for `Refresh of <calendar> failed`. A failure keeps the last good data; an empty section means no successful fetch yet.
+- **No courses for a studio / feed stale:** check `docker logs fitx-calendar` for `Refresh of <calendar> failed`. A failure keeps the last good data and retries after `REFRESH_INTERVAL_SECONDS`; no courses means no successful fetch yet.
 - **Parser broke after a site redesign:** FitX parsing lives in `app/parser.py`, body + soul in `app/bodyandsoul.py`.
-- **Force a refresh:** `curl -X POST http://<pi-ip>:8787/refresh`.
 
 ## Development
 Python 3.11, FastAPI, httpx, BeautifulSoup. ICS is generated by hand (`app/ics.py`).

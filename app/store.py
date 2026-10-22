@@ -46,6 +46,13 @@ def save_cache(name: str, events: List[CourseEvent]) -> None:
     atomic_write(DATA_DIR / f"{name}.json", json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
 
 
+def cache_mtime(name: str) -> float:
+    try:
+        return (DATA_DIR / f"{name}.json").stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def load_cache(name: str) -> Optional[List[CourseEvent]]:
     path = DATA_DIR / f"{name}.json"
     if not path.exists():
