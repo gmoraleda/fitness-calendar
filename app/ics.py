@@ -61,7 +61,7 @@ def _fmt_local(dt: _dt.datetime) -> str:
     return dt.strftime("%Y%m%dT%H%M%S")
 
 
-def generate_ics(course_id: int, events: Iterable[CourseEvent]) -> str:
+def generate_ics(uid_prefix: str, events: Iterable[CourseEvent], name: str | None = None) -> str:
     now = _dt.datetime.now(tz=_dt.timezone.utc)
     lines: List[str] = []
     lines.append("BEGIN:VCALENDAR")
@@ -69,13 +69,15 @@ def generate_ics(course_id: int, events: Iterable[CourseEvent]) -> str:
     lines.append("VERSION:2.0")
     lines.append("CALSCALE:GREGORIAN")
     lines.append("METHOD:PUBLISH")
+    if name:
+        lines.append(f"X-WR-CALNAME:{_escape_ics(name)}")
     lines.extend(_vtz_europe_berlin())
 
     sorted_events = sorted(events, key=lambda e: (e.start, e.title))
     for ev in sorted_events:
         lines.append("BEGIN:VEVENT")
         # Ensure UID uniqueness across multiple occurrences of the same course.
-        uid = f"fitx-{course_id}-{ev.id}-{int(ev.start.timestamp())}"
+        uid = f"{uid_prefix}-{ev.id}-{int(ev.start.timestamp())}"
         lines.append(f"UID:{_escape_ics(uid)}@local")
         lines.append(f"DTSTAMP:{_fmt_dt_utc(now)}")
         lines.append(f"DTSTART;TZID=Europe/Berlin:{_fmt_local(ev.start)}")

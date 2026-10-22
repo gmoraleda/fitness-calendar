@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import html
 import logging
 import os
 import signal
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Response
+from fastapi.responses import HTMLResponse
 
+from . import bodyandsoul
 from .fetcher import fetch_course_page, fetch_kursplan_html
 from .ics import generate_ics
 from .models import CourseEvent
@@ -26,23 +28,19 @@ logger = logging.getLogger("fitx")
 
 
 FITX_COURSE_ID = int(os.environ.get("FITX_COURSE_ID", "53"))
-PORT = int(os.environ.get("PORT", "8787"))
 REFRESH_INTERVAL_SECONDS = int(os.environ.get("REFRESH_INTERVAL_SECONDS", "900"))
 FITX_COOKIE = os.environ.get("FITX_COOKIE")
 REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN")
 TZ = os.environ.get("TZ", "Europe/Berlin")
 FITX_WEEKS_AHEAD = int(os.environ.get("FITX_WEEKS_AHEAD", "2"))
 FITX_USE_KURSPLAN = os.environ.get("FITX_USE_KURSPLAN", "true").lower() in ("1", "true", "yes")
+# Comma-separated body+soul center slugs, e.g. "theresienhoehe,sendling". Empty disables.
+BODYSOUL_CENTERS = [c.strip() for c in os.environ.get("BODYSOUL_CENTERS", "theresienhoehe,sendling").split(",") if c.strip()]
 
-# Comma-separated list of keywords to exclude from event titles (case-insensitive)
-_default_excludes = "booty x,xamba,x step,fatburn x"
-FITX_EXCLUDE_KEYWORDS = os.environ.get("FITX_EXCLUDE_KEYWORDS", _default_excludes)
 
-def _parse_exclude_keywords(raw: str) -> list[str]:
-    items = [s.strip().lower() for s in (raw or "").split(",")]
-    return [s for s in items if s]
+def _parse_keywords(raw: str) -> list[str]:
+    return [s.strip().lower() for s in (raw or "").split(",") if s.strip()]
 
-EXCLUDE_KEYWORDS = _parse_exclude_keywords(FITX_EXCLUDE_KEYWORDS)
 
 try:
     os.environ.setdefault("TZ", TZ)
@@ -55,57 +53,8 @@ except Exception:
 
 
 app = FastAPI()
-
-
-# Shared state with concurrency protection
-cache_lock = asyncio.Lock()
-cache_ics: Optional[str] = None
-cache_events: Optional[List[CourseEvent]] = None
 client: Optional[httpx.AsyncClient] = None
 bg_task: Optional[asyncio.Task] = None
-
-
-async def _refresh_once() -> None:
-    global cache_ics, cache_events
-    assert client is not None
-    logger.info("Refreshing FitX schedule for branch_id=%s", FITX_COURSE_ID)
-    try:
-        events: list[CourseEvent] = []
-        if FITX_USE_KURSPLAN:
-            now_berlin = datetime.now().astimezone(tz=_tz_berlin())
-            monday = (now_berlin - timedelta(days=now_berlin.weekday())).date()
-            weeks = max(1, FITX_WEEKS_AHEAD)
-            for i in range(weeks):
-                date_from = monday + timedelta(days=i * 7)
-                data, content_type = await fetch_kursplan_html(
-                    client, FITX_COURSE_ID, date_from, FITX_COOKIE
-                )
-                events.extend(parse_schedule(data, content_type))
-        else:
-            data, content_type = await fetch_course_page(client, FITX_COURSE_ID, FITX_COOKIE)
-            events = parse_schedule(data, content_type)
-
-        # De-duplicate after multi-week fetch
-        uniq = {}
-        for e in events:
-            key = (e.id, int(e.start.timestamp()), int(e.end.timestamp()))
-            uniq[key] = e
-        events = sorted(uniq.values(), key=lambda e: (e.start, e.title))
-
-        # Apply title-based filtering (case-insensitive substring match)
-        if EXCLUDE_KEYWORDS:
-            before = len(events)
-            lowered = [(e, e.title.lower()) for e in events]
-            events = [e for (e, t) in lowered if not any(k in t for k in EXCLUDE_KEYWORDS)]
-            removed = before - len(events)
-            if removed:
-                logger.info("Filtered %d events by keywords: %s", removed, ", ".join(EXCLUDE_KEYWORDS))
-        ics_text = generate_ics(FITX_COURSE_ID, events)
-        # Atomically persist and update in-memory
-        await _update_cache(events, ics_text)
-        logger.info("Refresh successful: %d events", len(events))
-    except Exception as e:
-        logger.error("Refresh failed: %s", e)
 
 
 def _tz_berlin():
@@ -117,66 +66,106 @@ def _tz_berlin():
         return None
 
 
-async def _update_cache(events: List[CourseEvent], ics_text: str) -> None:
-    global cache_ics, cache_events
-    # Save to disk first
-    save_cache(events, ics_text)
-    # Update memory
-    async with cache_lock:
-        cache_events = events
-        cache_ics = ics_text
+async def _fetch_fitx() -> List[CourseEvent]:
+    assert client is not None
+    if not FITX_USE_KURSPLAN:
+        data, content_type = await fetch_course_page(client, FITX_COURSE_ID, FITX_COOKIE)
+        return parse_schedule(data, content_type)
+    events: list[CourseEvent] = []
+    now_berlin = datetime.now().astimezone(tz=_tz_berlin())
+    monday = (now_berlin - timedelta(days=now_berlin.weekday())).date()
+    for i in range(max(1, FITX_WEEKS_AHEAD)):
+        data, content_type = await fetch_kursplan_html(
+            client, FITX_COURSE_ID, monday + timedelta(days=i * 7), FITX_COOKIE
+        )
+        events.extend(parse_schedule(data, content_type))
+    return events
+
+
+def _bodysoul_fetcher(center: str) -> Callable[[], Awaitable[List[CourseEvent]]]:
+    async def fetch() -> List[CourseEvent]:
+        assert client is not None
+        return await bodyandsoul.fetch_center(client, center)
+
+    return fetch
+
+
+class Calendar:
+    def __init__(self, title: str, uid_prefix: str, fetch, exclude_env: str, default_excludes: str = ""):
+        self.title = title
+        self.uid_prefix = uid_prefix
+        self.fetch = fetch
+        self.excludes = _parse_keywords(os.environ.get(exclude_env, default_excludes))
+        self.events: List[CourseEvent] = []
+
+
+CALENDARS: Dict[str, Calendar] = {
+    "fitx": Calendar(
+        "FitX", f"fitx-{FITX_COURSE_ID}", _fetch_fitx,
+        "FITX_EXCLUDE_KEYWORDS", "booty x,xamba,x step,fatburn x",
+    ),
+    **{
+        f"bodyandsoul-{c}": Calendar(
+            f"body + soul {c.replace('-', ' ').title()}", f"bodyandsoul-{c}",
+            _bodysoul_fetcher(c), "BODYSOUL_EXCLUDE_KEYWORDS",
+        )
+        for c in BODYSOUL_CENTERS
+    },
+}
+
+
+async def _refresh_one(name: str, cal: Calendar) -> None:
+    try:
+        events = await cal.fetch()
+        uniq = {(e.id, int(e.start.timestamp()), int(e.end.timestamp())): e for e in events}
+        events = sorted(uniq.values(), key=lambda e: (e.start, e.title))
+        if cal.excludes:
+            events = [e for e in events if not any(k in e.title.lower() for k in cal.excludes)]
+        save_cache(name, events)
+        cal.events = events  # single reference swap; no lock needed in asyncio
+        logger.info("Refreshed %s: %d events", name, len(events))
+    except Exception as e:
+        logger.error("Refresh of %s failed, keeping last good data: %s", name, e)
+
+
+async def _refresh_all() -> None:
+    await asyncio.gather(*(_refresh_one(n, c) for n, c in CALENDARS.items()))
 
 
 async def refresh_loop(stop_event: asyncio.Event) -> None:
-    await _refresh_once()
     while not stop_event.is_set():
+        await _refresh_all()
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=REFRESH_INTERVAL_SECONDS)
         except asyncio.TimeoutError:
             pass
-        if stop_event.is_set():
-            break
-        await _refresh_once()
 
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    global client, bg_task, cache_ics, cache_events
+    global client, bg_task
     ensure_data_dir()
     client = httpx.AsyncClient(http2=False, headers={})
-    # Try to load existing cache
-    ics_text, events = load_cache()
-    async with cache_lock:
-        cache_ics = ics_text
-        cache_events = events
-    if ics_text:
-        logger.info("Loaded cached ICS from disk")
-    else:
-        logger.info("No cached ICS found at startup")
-    # Start background loop
+    for name, cal in CALENDARS.items():
+        cal.events = load_cache(name) or []
+        logger.info("Loaded %d cached events for %s", len(cal.events), name)
     stop_event = asyncio.Event()
-
-    def _handle_sig(*_args: object) -> None:
-        stop_event.set()
-
     loop = asyncio.get_event_loop()
     try:
-        loop.add_signal_handler(signal.SIGTERM, _handle_sig)
-        loop.add_signal_handler(signal.SIGINT, _handle_sig)
+        loop.add_signal_handler(signal.SIGTERM, stop_event.set)
+        loop.add_signal_handler(signal.SIGINT, stop_event.set)
     except (NotImplementedError, RuntimeError):
-        # Signals may not be available or we're not in main thread (e.g., TestClient)
         pass
     bg_task = asyncio.create_task(refresh_loop(stop_event))
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
-    global client, bg_task
     if bg_task:
         bg_task.cancel()
         try:
             await bg_task
-        except Exception:
+        except BaseException:
             pass
     if client:
         await client.aclose()
@@ -187,27 +176,85 @@ async def health() -> Response:
     return Response(content="OK", media_type="text/plain")
 
 
-@app.get("/calendar.ics")
-async def calendar() -> Response:
-    async with cache_lock:
-        current_ics = cache_ics
-        current_events = cache_events
-    if current_ics:
-        return Response(content=current_ics, media_type="text/calendar; charset=utf-8")
-    # if no cached ICS yet, serve an empty calendar so clients can subscribe
-    empty = generate_ics(FITX_COURSE_ID, current_events or [])
-    return Response(content=empty, media_type="text/calendar; charset=utf-8")
+def _ics_response(name: str, courses: List[str]) -> Response:
+    cal = CALENDARS.get(name)
+    if not cal:
+        raise HTTPException(status_code=404, detail="Unknown calendar")
+    events = cal.events
+    if courses:
+        wanted = set(courses)
+        events = [e for e in events if e.title in wanted]
+    return Response(
+        content=generate_ics(cal.uid_prefix, events, cal.title),
+        media_type="text/calendar; charset=utf-8",
+    )
+
+
+@app.get("/{name}.ics")
+async def named_calendar(name: str, course: List[str] = Query(default=[])) -> Response:
+    return _ics_response(name, course)
 
 
 @app.post("/refresh")
 async def refresh(x_refresh_token: Optional[str] = Header(default=None, alias="X-Refresh-Token")) -> dict:
-    if REFRESH_TOKEN:
-        if not x_refresh_token or x_refresh_token != REFRESH_TOKEN:
-            raise HTTPException(status_code=401, detail="Unauthorized")
-    await _refresh_once()
-    async with cache_lock:
-        ev_count = len(cache_events or [])
-    return {"status": "ok", "events": ev_count}
+    if REFRESH_TOKEN and x_refresh_token != REFRESH_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    await _refresh_all()
+    return {"status": "ok", "events": {n: len(c.events) for n, c in CALENDARS.items()}}
 
 
-# Uvicorn will run via Docker CMD binding to 0.0.0.0 and port from env
+@app.get("/", response_class=HTMLResponse)
+async def index() -> str:
+    sections = []
+    for name, cal in CALENDARS.items():
+        titles = sorted({e.title for e in cal.events}, key=str.lower)
+        boxes = "".join(
+            f'<label><input type="checkbox" value="{html.escape(t)}"> {html.escape(t)}</label>' for t in titles
+        ) or "<p class=muted>No courses loaded yet.</p>"
+        sections.append(
+            f'<section data-name="{html.escape(name)}"><h2>{html.escape(cal.title)}</h2>'
+            f'<input class="q" type="search" placeholder="Filter courses…">'
+            f'<div class="boxes">{boxes}</div>'
+            f'<p>Subscribe: <a class="link"></a> <button type="button">Copy</button></p>'
+            f'<p class="muted">Nothing ticked = all courses.</p></section>'
+        )
+    return PAGE.replace("{{SECTIONS}}", "".join(sections))
+
+
+PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Course Calendars</title>
+<style>
+:root { color-scheme: light dark; --fg:#1d1d1f; --bg:#fff; --muted:#6e6e73; --line:#d2d2d7; --accent:#0071e3; }
+@media (prefers-color-scheme: dark) { :root { --fg:#f5f5f7; --bg:#1c1c1e; --muted:#98989d; --line:#3a3a3c; --accent:#2997ff; } }
+body { font: 16px/1.4 -apple-system, system-ui, sans-serif; color: var(--fg); background: var(--bg); max-width: 720px; margin: 0 auto; padding: 16px; }
+section { border-top: 1px solid var(--line); padding: 8px 0 16px; }
+.boxes { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 16px; margin: 8px 0; }
+label { display: flex; gap: 8px; align-items: center; padding: 6px 0; }
+.q { width: 100%; box-sizing: border-box; padding: 8px; font: inherit; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: inherit; }
+a { color: var(--accent); word-break: break-all; }
+button { font: inherit; padding: 4px 12px; }
+.muted { color: var(--muted); font-size: 14px; }
+</style></head><body>
+<h1>Course Calendars</h1>
+<p class="muted">Tick the courses you want, then tap the link to subscribe. Changing the ticks gives a new link.</p>
+{{SECTIONS}}
+<script>
+document.querySelectorAll('section').forEach(s => {
+  const link = s.querySelector('.link');
+  const update = () => {
+    const qs = [...s.querySelectorAll('.boxes input:checked')]
+      .map(b => 'course=' + encodeURIComponent(b.value)).join('&');
+    const url = 'webcal://' + location.host + '/' + s.dataset.name + '.ics' + (qs ? '?' + qs : '');
+    link.href = link.textContent = url;
+  };
+  s.addEventListener('change', update);
+  s.querySelector('.q').addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    s.querySelectorAll('.boxes label').forEach(l => l.hidden = !l.textContent.toLowerCase().includes(q));
+  });
+  s.querySelector('button').addEventListener('click', () => navigator.clipboard?.writeText(link.href));
+  update();
+});
+</script></body></html>"""

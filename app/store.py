@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
-from typing import Any, List
+from typing import List, Optional
+
+from zoneinfo import ZoneInfo
 
 from .models import CourseEvent
 
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data")).resolve()
-CACHE_ICS = DATA_DIR / "cache.ics"
-CACHE_JSON = DATA_DIR / "cache.json"
+BERLIN = ZoneInfo("Europe/Berlin")
 
 
 def ensure_data_dir() -> None:
@@ -26,58 +28,41 @@ def atomic_write(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-def save_cache(events: List[CourseEvent], ics_text: str) -> None:
+def save_cache(name: str, events: List[CourseEvent]) -> None:
     ensure_data_dir()
-    # Save JSON (normalized parsed events)
-    json_payload: list[dict[str, Any]] = []
-    for e in events:
-        json_payload.append(
-            {
-                "id": e.id,
-                "title": e.title,
-                "start": e.start.isoformat(),
-                "end": e.end.isoformat(),
-                "location": e.location,
-                "instructor": e.instructor,
-                "room": e.room,
-                "description": e.description,
-            }
-        )
-    atomic_write(CACHE_JSON, json.dumps(json_payload, ensure_ascii=False, indent=2).encode("utf-8"))
-    # Save ICS
-    atomic_write(CACHE_ICS, ics_text.encode("utf-8"))
+    payload = [
+        {
+            "id": e.id,
+            "title": e.title,
+            "start": e.start.isoformat(),
+            "end": e.end.isoformat(),
+            "location": e.location,
+            "instructor": e.instructor,
+            "room": e.room,
+            "description": e.description,
+        }
+        for e in events
+    ]
+    atomic_write(DATA_DIR / f"{name}.json", json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
 
 
-def load_cache() -> tuple[str | None, list[CourseEvent] | None]:
-    ics_text: str | None = None
-    events: list[CourseEvent] | None = None
-    if CACHE_ICS.exists():
-        try:
-            ics_text = CACHE_ICS.read_text(encoding="utf-8")
-        except Exception:
-            ics_text = None
-    if CACHE_JSON.exists():
-        try:
-            raw = json.loads(CACHE_JSON.read_text(encoding="utf-8"))
-            from datetime import datetime
-            from zoneinfo import ZoneInfo
-
-            tz = ZoneInfo("Europe/Berlin")
-            events = []
-            for it in raw:
-                events.append(
-                    CourseEvent(
-                        id=str(it.get("id", "")),
-                        title=str(it.get("title", "")),
-                        start=datetime.fromisoformat(it["start"]).astimezone(tz),
-                        end=datetime.fromisoformat(it["end"]).astimezone(tz),
-                        location=it.get("location"),
-                        instructor=it.get("instructor"),
-                        room=it.get("room"),
-                        description=it.get("description"),
-                    )
-                )
-        except Exception:
-            events = None
-    return ics_text, events
-
+def load_cache(name: str) -> Optional[List[CourseEvent]]:
+    path = DATA_DIR / f"{name}.json"
+    if not path.exists():
+        return None
+    try:
+        return [
+            CourseEvent(
+                id=str(it.get("id", "")),
+                title=str(it.get("title", "")),
+                start=datetime.fromisoformat(it["start"]).astimezone(BERLIN),
+                end=datetime.fromisoformat(it["end"]).astimezone(BERLIN),
+                location=it.get("location"),
+                instructor=it.get("instructor"),
+                room=it.get("room"),
+                description=it.get("description"),
+            )
+            for it in json.loads(path.read_text(encoding="utf-8"))
+        ]
+    except Exception:
+        return None

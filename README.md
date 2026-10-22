@@ -3,14 +3,15 @@
 A lightweight local service that fetches FitX gym course schedules and publishes a subscribable iCalendar (ICS) feed you can add to your iPhone Calendar. Runs entirely on your Raspberry Pi (arm64) with Docker — no cloud dependencies.
 
 ## Features
-- FastAPI + Uvicorn server serving `text/calendar` at `/calendar.ics`
+- FastAPI + Uvicorn server serving `text/calendar` feeds per gym, plus a course picker at `/`
 - Background refresh loop with persisted cache in `/data`
 - Robust parsing of JSON or HTML-embedded JSON using BeautifulSoup
 - Manual ICS generation (RFC 5545) including `VTIMEZONE` for Europe/Berlin
 - Optional cookie support (never logged), optional refresh token for `/refresh`
 
 ## Endpoints
-- `GET /calendar.ics` → returns ICS feed
+- `GET /` → course picker: tick the courses you want and get a personal subscription link
+- `GET /fitx.ics`, `GET /bodyandsoul-<center>.ics` → ICS feeds; add `?course=<title>` (repeatable) to only include those courses
 - `GET /health` → returns `OK` (200)
 - `POST /refresh` → triggers immediate refresh (requires `X-Refresh-Token` header if `REFRESH_TOKEN` is set)
 
@@ -36,7 +37,7 @@ A lightweight local service that fetches FitX gym course schedules and publishes
 
 6) Subscribe on iPhone:
    - Open: Settings → Calendar → Accounts → Add Account → Other → Add Subscribed Calendar
-   - URL: `http://<pi-ip>:<PORT>/calendar.ics`
+   - Open `http://<pi-ip>:<PORT>/`, pick courses, and tap the subscribe link
 
 ## Configuration (Environment Variables)
 - `FITX_COURSE_ID` (default: `53`) – FitX branch/studio id
@@ -47,6 +48,8 @@ A lightweight local service that fetches FitX gym course schedules and publishes
 - `TZ` (default: `Europe/Berlin`)
 - `FITX_EXCLUDE_KEYWORDS` (default: `booty x,xamba,x step,fatburn x`) – comma-separated list of case-insensitive title substrings to filter out from the calendar
 - `FITX_USE_KURSPLAN` (default: `true`) – use `/kursplan/<branch>?dateFrom=YYYY-MM-DD` HTML for weekly schedules
+- `BODYSOUL_CENTERS` (default: `theresienhoehe,sendling`) – comma-separated body + soul center slugs as in `bodyandsoul.de/standorte/<slug>/…`; empty disables
+- `BODYSOUL_EXCLUDE_KEYWORDS` (optional) – like `FITX_EXCLUDE_KEYWORDS`, for body + soul
 - `FITX_WEEKS_AHEAD` (default: `2`) – how many weeks to fetch starting from the current week when `FITX_USE_KURSPLAN=true`
  - `CLOUDFLARED_TOKEN` (optional) – Cloudflare Tunnel token used by the `cloudflared` sidecar.
 
@@ -54,13 +57,12 @@ A lightweight local service that fetches FitX gym course schedules and publishes
 This repo includes an optional `cloudflared` sidecar in `docker-compose.yml`.
 
 Two modes are supported:
-- Quick Tunnel (no domain needed): default when `CLOUDFLARED_TOKEN` is not set. Start with `docker compose up -d`, then run `docker compose logs -f cloudflared` and copy the `https://<random>.trycloudflare.com` URL. Use that URL for `/calendar.ics` and `/health`.
+- Quick Tunnel (no domain needed): default when `CLOUDFLARED_TOKEN` is not set. Start with `docker compose up -d`, then run `docker compose logs -f cloudflared` and copy the `https://<random>.trycloudflare.com` URL. Use that URL for `/` and `/health`.
 - Named Tunnel (requires a Cloudflare-managed domain): set up a Tunnel + Public Hostname in the Cloudflare dashboard pointing to `http://localhost:8787` (or `http://fitx-calendar:8787`), set `CLOUDFLARED_TOKEN=...` in `.env`, then `docker compose up -d`. Use your chosen hostname.
 
 ## Data Persistence
 - The container uses `/data` for persistence and stores:
-  - `/data/cache.ics` – last known good calendar
-  - `/data/cache.json` – normalized parsed events
+  - `/data/<calendar>.json` – last known good events per calendar
 - In `docker-compose.yml`, this is mounted as a named volume: `fitx_data:/data`.
 - On startup, the server loads any existing cache immediately, then refreshes in the background.
 
