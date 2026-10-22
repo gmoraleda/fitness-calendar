@@ -13,7 +13,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import HTMLResponse
 
 from . import bodyandsoul
-from .fetcher import fetch_course_page, fetch_kursplan_html
+from .fetcher import fetch_course_page, fetch_fitx_studios, fetch_kursplan_html
 from .ics import generate_ics
 from .models import CourseEvent
 from .parser import parse_schedule
@@ -27,7 +27,10 @@ logging.basicConfig(
 logger = logging.getLogger("fitx")
 
 
-FITX_COURSE_ID = int(os.environ.get("FITX_COURSE_ID", "53"))
+# Comma-separated FitX studio ids (value of the studio dropdown on fitx.de/fitnesskurse). 53 = München Sendling-Westpark.
+FITX_STUDIOS = [
+    int(s) for s in os.environ.get("FITX_STUDIOS", os.environ.get("FITX_COURSE_ID", "53")).split(",") if s.strip()
+]
 REFRESH_INTERVAL_SECONDS = int(os.environ.get("REFRESH_INTERVAL_SECONDS", "900"))
 FITX_COOKIE = os.environ.get("FITX_COOKIE")
 REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN")
@@ -66,17 +69,21 @@ def _tz_berlin():
         return None
 
 
-async def _fetch_fitx() -> List[CourseEvent]:
+def _fitx_fetcher(studio: int) -> Callable[[], Awaitable[List[CourseEvent]]]:
+    return lambda: _fetch_fitx(studio)
+
+
+async def _fetch_fitx(studio: int) -> List[CourseEvent]:
     assert client is not None
     if not FITX_USE_KURSPLAN:
-        data, content_type = await fetch_course_page(client, FITX_COURSE_ID, FITX_COOKIE)
+        data, content_type = await fetch_course_page(client, studio, FITX_COOKIE)
         return parse_schedule(data, content_type)
     events: list[CourseEvent] = []
     now_berlin = datetime.now().astimezone(tz=_tz_berlin())
     monday = (now_berlin - timedelta(days=now_berlin.weekday())).date()
     for i in range(max(1, FITX_WEEKS_AHEAD)):
         data, content_type = await fetch_kursplan_html(
-            client, FITX_COURSE_ID, monday + timedelta(days=i * 7), FITX_COOKIE
+            client, studio, monday + timedelta(days=i * 7), FITX_COOKIE
         )
         events.extend(parse_schedule(data, content_type))
     return events
@@ -100,10 +107,13 @@ class Calendar:
 
 
 CALENDARS: Dict[str, Calendar] = {
-    "fitx": Calendar(
-        "FitX", f"fitx-{FITX_COURSE_ID}", _fetch_fitx,
-        "FITX_EXCLUDE_KEYWORDS", "booty x,xamba,x step,fatburn x",
-    ),
+    **{
+        f"fitx-{s}": Calendar(
+            f"FitX {s}", f"fitx-{s}", _fitx_fetcher(s),
+            "FITX_EXCLUDE_KEYWORDS", "booty x,xamba,x step,fatburn x",
+        )
+        for s in FITX_STUDIOS
+    },
     **{
         f"bodyandsoul-{c}": Calendar(
             f"body + soul {c.replace('-', ' ').title()}", f"bodyandsoul-{c}",
@@ -141,11 +151,23 @@ async def refresh_loop(stop_event: asyncio.Event) -> None:
             pass
 
 
+async def _name_fitx_studios() -> None:
+    try:
+        names = await fetch_fitx_studios(client)
+    except Exception as e:
+        logger.warning("Could not load FitX studio names: %s", e)
+        return
+    for s in FITX_STUDIOS:
+        if s in names:
+            CALENDARS[f"fitx-{s}"].title = f"FitX {names[s]}"
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     global client, bg_task
     ensure_data_dir()
     client = httpx.AsyncClient(http2=False, headers={})
+    await _name_fitx_studios()
     for name, cal in CALENDARS.items():
         cal.events = load_cache(name) or []
         logger.info("Loaded %d cached events for %s", len(cal.events), name)

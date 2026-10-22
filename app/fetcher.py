@@ -60,3 +60,19 @@ async def fetch_kursplan_html(
         except Exception as e:
             logger.warning("Fetch attempt %s failed (kursplan): %s", attempt + 1, e)
     raise RuntimeError("Failed to fetch FitX kursplan after 3 attempts")
+
+
+async def fetch_fitx_studios(client: httpx.AsyncClient) -> dict[int, str]:
+    """Studio id -> name, from the studio dropdown on the course page."""
+    from bs4 import BeautifulSoup
+
+    resp = await client.get(
+        "https://www.fitx.de/fitnesskurse", headers=build_headers(None), timeout=httpx.Timeout(15.0, connect=10.0)
+    )
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    return {
+        int(o["value"]): o.get_text(" ", strip=True)
+        for o in soup.select("option.course_plan_selector__option")
+        if o.get("value", "").isdigit()
+    }

@@ -11,7 +11,7 @@ A lightweight local service that fetches FitX gym course schedules and publishes
 
 ## Endpoints
 - `GET /` → course picker: tick the courses you want and get a personal subscription link
-- `GET /fitx.ics`, `GET /bodyandsoul-<center>.ics` → ICS feeds; add `?course=<title>` (repeatable) to only include those courses
+- `GET /fitx-<studio>.ics`, `GET /bodyandsoul-<center>.ics` → ICS feeds; add `?course=<title>` (repeatable) to only include those courses
 - `GET /health` → returns `OK` (200)
 - `POST /refresh` → triggers immediate refresh (requires `X-Refresh-Token` header if `REFRESH_TOKEN` is set)
 
@@ -40,7 +40,7 @@ A lightweight local service that fetches FitX gym course schedules and publishes
    - Open `http://<pi-ip>:<PORT>/`, pick courses, and tap the subscribe link
 
 ## Configuration (Environment Variables)
-- `FITX_COURSE_ID` (default: `53`) – FitX branch/studio id
+- `FITX_STUDIOS` (default: `53` = München Sendling-Westpark) – comma-separated FitX studio ids, i.e. the `value` of the studio dropdown on fitx.de/fitnesskurse; each becomes `/fitx-<id>.ics` (legacy `FITX_COURSE_ID` still read as fallback)
 - `PORT` (default: `8787`) – host port; container always listens on 8787
 - `REFRESH_INTERVAL_SECONDS` (default: `900`)
 - `FITX_COOKIE` (optional; NEVER logged)
