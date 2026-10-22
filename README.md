@@ -46,10 +46,8 @@ A lightweight local service that fetches FitX gym course schedules and publishes
 - `FITX_COOKIE` (optional; NEVER logged)
 - `REFRESH_TOKEN` (optional; protects `/refresh`)
 - `TZ` (default: `Europe/Berlin`)
-- `FITX_EXCLUDE_KEYWORDS` (default: `booty x,xamba,x step,fatburn x`) – comma-separated list of case-insensitive title substrings to filter out from the calendar
 - `FITX_USE_KURSPLAN` (default: `true`) – use `/kursplan/<branch>?dateFrom=YYYY-MM-DD` HTML for weekly schedules
 - `BODYSOUL_CENTERS` (default: `theresienhoehe,sendling`) – comma-separated body + soul center slugs as in `bodyandsoul.de/standorte/<slug>/…`; empty disables
-- `BODYSOUL_EXCLUDE_KEYWORDS` (optional) – like `FITX_EXCLUDE_KEYWORDS`, for body + soul
 - `FITX_WEEKS_AHEAD` (default: `2`) – how many weeks to fetch starting from the current week when `FITX_USE_KURSPLAN=true`
  - `CLOUDFLARED_TOKEN` (optional) – Cloudflare Tunnel token used by the `cloudflared` sidecar.
 

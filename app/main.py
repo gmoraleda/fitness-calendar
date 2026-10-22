@@ -41,10 +41,6 @@ FITX_USE_KURSPLAN = os.environ.get("FITX_USE_KURSPLAN", "true").lower() in ("1",
 BODYSOUL_CENTERS = [c.strip() for c in os.environ.get("BODYSOUL_CENTERS", "theresienhoehe,sendling").split(",") if c.strip()]
 
 
-def _parse_keywords(raw: str) -> list[str]:
-    return [s.strip().lower() for s in (raw or "").split(",") if s.strip()]
-
-
 try:
     os.environ.setdefault("TZ", TZ)
     import time as _time
@@ -98,11 +94,10 @@ def _bodysoul_fetcher(center: str) -> Callable[[], Awaitable[List[CourseEvent]]]
 
 
 class Calendar:
-    def __init__(self, title: str, uid_prefix: str, fetch, exclude_env: str, default_excludes: str = ""):
+    def __init__(self, title: str, uid_prefix: str, fetch):
         self.title = title
         self.uid_prefix = uid_prefix
         self.fetch = fetch
-        self.excludes = _parse_keywords(os.environ.get(exclude_env, default_excludes))
         self.events: List[CourseEvent] = []
 
 
@@ -110,14 +105,13 @@ CALENDARS: Dict[str, Calendar] = {
     **{
         f"fitx-{s}": Calendar(
             f"FitX {s}", f"fitx-{s}", _fitx_fetcher(s),
-            "FITX_EXCLUDE_KEYWORDS", "booty x,xamba,x step,fatburn x",
         )
         for s in FITX_STUDIOS
     },
     **{
         f"bodyandsoul-{c}": Calendar(
             f"body + soul {c.replace('-', ' ').title()}", f"bodyandsoul-{c}",
-            _bodysoul_fetcher(c), "BODYSOUL_EXCLUDE_KEYWORDS",
+            _bodysoul_fetcher(c),
         )
         for c in BODYSOUL_CENTERS
     },
@@ -129,8 +123,6 @@ async def _refresh_one(name: str, cal: Calendar) -> None:
         events = await cal.fetch()
         uniq = {(e.id, int(e.start.timestamp()), int(e.end.timestamp())): e for e in events}
         events = sorted(uniq.values(), key=lambda e: (e.start, e.title))
-        if cal.excludes:
-            events = [e for e in events if not any(k in e.title.lower() for k in cal.excludes)]
         save_cache(name, events)
         cal.events = events  # single reference swap; no lock needed in asyncio
         logger.info("Refreshed %s: %d events", name, len(events))
