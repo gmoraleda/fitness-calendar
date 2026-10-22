@@ -318,6 +318,7 @@ def _parse_kursplan_html(soup: BeautifulSoup) -> List[CourseEvent]:
                 continue
 
             title = entry.get("data-title") or "FitX Course"
+            href = entry.get("href")
             regular_id = entry.get("data-regular-course-id")
 
             times = entry.select_one(".courses_plan__times")
@@ -349,6 +350,7 @@ def _parse_kursplan_html(soup: BeautifulSoup) -> List[CourseEvent]:
                     instructor=None,
                     room=None,
                     description=None,
+                    url=f"https://www.fitx.de{href}" if href and href.startswith("/") else href,
                 )
             )
 
@@ -358,3 +360,27 @@ def _parse_kursplan_html(soup: BeautifulSoup) -> List[CourseEvent]:
         key = (e.id, int(e.start.timestamp()), int(e.end.timestamp()))
         uniq[key] = e
     return sorted(uniq.values(), key=lambda e: (e.start, e.title))
+
+
+def parse_fitx_course_page(html: str) -> dict:
+    """Description, intensity (as level), main training goal (as category) from fitx.de/fitnesskurse/<course>."""
+    soup = BeautifulSoup(html, "html.parser")
+    meta = soup.select_one('meta[name="description"]')
+    facts = {}
+    for c in soup.select(".course_hero__condition"):
+        head = c.select_one(".course_hero__conditions_headline")
+        sub = c.select_one(".course_hero__conditions_subline")
+        if head and sub:
+            facts[head.get_text(strip=True)] = " ".join(sub.get_text(" ", strip=True).split()).replace(" ,", ",")
+    goals = [
+        (int(p.get("value") or 0), p.find_previous_sibling().get_text(strip=True))
+        for p in soup.select(".course_hero__goals-progress-bar")
+        if p.find_previous_sibling()
+    ]
+    extra = [f"{k}: {facts[k]}" for k in ("Equipment (vorhanden)", "Kalorienverbrauch") if k in facts]
+    desc = "\n".join(filter(None, [meta.get("content", "").strip() if meta else None, *extra]))
+    return {
+        "description": desc or None,
+        "level": facts.get("Intensität"),
+        "category": max(goals)[1] if goals else None,
+    }

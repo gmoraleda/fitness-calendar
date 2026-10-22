@@ -89,13 +89,21 @@ def generate_ics(uid_prefix: str, events: Iterable[CourseEvent], name: str | Non
             desc_parts.append(f"Instructor: {ev.instructor}")
         if ev.room:
             desc_parts.append(f"Room: {ev.room}")
+        if ev.level:
+            desc_parts.append(f"Level: {ev.level}")
+        if ev.category:
+            desc_parts.append(f"Category: {ev.category}")
         if ev.description:
-            desc_parts.append(ev.description)
+            desc_parts.append("\n" + ev.description)
+        if ev.url:
+            desc_parts.append("\n" + ev.url)
         if desc_parts:
             _desc_joined = "\n".join(desc_parts)
             lines.append(f"DESCRIPTION:{_escape_ics(_desc_joined)}")
         if ev.location:
             lines.append(f"LOCATION:{_escape_ics(ev.location)}")
+        if ev.url:
+            lines.append(f"URL:{ev.url}")
         lines.append("END:VEVENT")
 
     lines.append("END:VCALENDAR")

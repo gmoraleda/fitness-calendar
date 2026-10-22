@@ -5,6 +5,7 @@ Turns gym class schedules into calendar feeds you can subscribe to (iPhone, macO
 ## How it works
 - Studios are fetched on demand: the first time someone picks a studio (or a calendar app requests its feed), its schedule is scraped and cached in `/data/<calendar>.json`.
 - Once cached data is older than `REFRESH_INTERVAL_SECONDS` (15 min), the next request serves it immediately and re-fetches in the background. Studios nobody uses are never fetched.
+- Each course's page (description, level, category) is fetched once and cached for a week in `/data/<gym>-courses.json`. The picker groups courses by category and shows the details; calendar events include them in their notes.
 - If a gym's site is down or returns nothing, the last good data keeps being served.
 - Feeds are generated on request, so filtering costs nothing and no per-user state is stored.
 

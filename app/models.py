@@ -15,4 +15,7 @@ class CourseEvent:
     instructor: Optional[str] = None
     room: Optional[str] = None
     description: Optional[str] = None
+    category: Optional[str] = None
+    level: Optional[str] = None
+    url: Optional[str] = None
 

@@ -40,6 +40,9 @@ def save_cache(name: str, events: List[CourseEvent]) -> None:
             "instructor": e.instructor,
             "room": e.room,
             "description": e.description,
+            "category": e.category,
+            "level": e.level,
+            "url": e.url,
         }
         for e in events
     ]
@@ -68,6 +71,9 @@ def load_cache(name: str) -> Optional[List[CourseEvent]]:
                 instructor=it.get("instructor"),
                 room=it.get("room"),
                 description=it.get("description"),
+                category=it.get("category"),
+                level=it.get("level"),
+                url=it.get("url"),
             )
             for it in json.loads(path.read_text(encoding="utf-8"))
         ]

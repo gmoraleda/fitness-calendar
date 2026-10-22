@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from .fetcher import build_headers
 from .models import CourseEvent
+from .courseinfo import add_info
 
 BERLIN = ZoneInfo("Europe/Berlin")
 MONTHS = {
@@ -34,6 +35,7 @@ async def fetch_center(client: httpx.AsyncClient, center: str) -> List[CourseEve
     if not events:
         # Don't overwrite a good cache with an empty calendar (e.g. site redesign/outage page).
         raise ValueError(f"No body+soul courses found for {center}")
+    await add_info(client, "bodyandsoul", events, parse_course_page)
     return events
 
 
@@ -68,7 +70,44 @@ def parse_courseplan(html: str) -> List[CourseEvent]:
                         start=start,
                         end=end,
                         room=room,
-                        description=a.get("href"),
+                        url=a.get("href"),
+                        category=_category(a.get("href")),
                     )
                     uniq[(ev.id, start)] = ev
     return sorted(uniq.values(), key=lambda e: (e.start, e.title))
+
+
+# Category slug in course URLs (.../group-fitness-kursangebot/<slug>/<course>) -> display name.
+CATEGORIES = {
+    "body-mind": "Body & Mind",
+    "workout": "Workout",
+    "choreographie": "Choreographie",
+    "aqua": "Aqua",
+    "cycling": "Cycling",
+    "small-group-training": "Small Group Training",
+    "power-plater": "Power Plate®",
+    "kurskategorie-boostar": "BOOSTAR®",
+    "outdoor": "Outdoor",
+}
+
+
+def _category(url: str | None) -> str | None:
+    m = re.search(r"group-fitness-kursangebot/([^/]+)/", url or "")
+    return CATEGORIES.get(m.group(1), m.group(1).replace("-", " ").title()) if m else None
+
+
+def parse_course_page(html: str) -> dict:
+    """Description, level and category from a course detail page."""
+    soup = BeautifulSoup(html, "html.parser")
+    body = soup.select_one(".ce-bodytext")
+    paras = [" ".join(p.get_text(" ", strip=True).split()).replace(" ®", "®") for p in body.find_all("p")] if body else []
+    level = next(
+        (li.get_text(" ", strip=True) for li in soup.select(".list-icon") if li.select_one("img[src*=level]")),
+        None,
+    )
+    tag = soup.select_one(".box-tags .tag")
+    return {
+        "description": "\n".join(p for p in paras if p) or None,
+        "level": level,
+        "category": tag.get_text(" ", strip=True) if tag else None,
+    }
