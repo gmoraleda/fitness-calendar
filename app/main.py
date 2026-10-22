@@ -245,7 +245,7 @@ PAGE = """<!doctype html>
 body { font: 16px/1.4 -apple-system, system-ui, sans-serif; color: var(--fg); background: var(--bg); max-width: 720px; margin: 0 auto; padding: 16px; }
 section { border-top: 1px solid var(--line); padding: 8px 0 16px; }
 .boxes { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 16px; margin: 8px 0; }
-label { display: flex; gap: 8px; align-items: center; padding: 6px 0; }
+label { display: flex; gap: 8px; align-items: center; padding: 6px 0; } label[hidden] { display: none; }
 .q { width: 100%; box-sizing: border-box; padding: 8px; font: inherit; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: inherit; }
 a { color: var(--accent); word-break: break-all; }
 button { font: inherit; padding: 4px 12px; }
