@@ -1,82 +1,72 @@
-# FitX Course Schedule to ICS (Local, Dockerized)
+# Fitness Calendar
 
-A lightweight local service that fetches FitX gym course schedules and publishes a subscribable iCalendar (ICS) feed you can add to your iPhone Calendar. Runs entirely on your Raspberry Pi (arm64) with Docker — no cloud dependencies.
+Turns gym class schedules into calendar feeds you can subscribe to (iPhone, macOS, Google Calendar). Supports **FitX** studios and **body + soul** centers. Each subscriber picks the courses they care about and gets their own feed URL. Runs on a Raspberry Pi with Docker.
 
-## Features
-- FastAPI + Uvicorn server serving `text/calendar` feeds per gym, plus a course picker at `/`
-- Background refresh loop with persisted cache in `/data`
-- Robust parsing of JSON or HTML-embedded JSON using BeautifulSoup
-- Manual ICS generation (RFC 5545) including `VTIMEZONE` for Europe/Berlin
-- Optional cookie support (never logged), optional refresh token for `/refresh`
+## How it works
+- A background loop scrapes each configured gym every 15 minutes and caches the classes in `/data/<calendar>.json`.
+- If a gym's site is down or returns nothing, the last good data keeps being served.
+- Feeds are generated on request, so filtering costs nothing and no per-user state is stored.
+
+## Using it
+Open the site root (e.g. `https://ics.moraleda.work/` or `http://<pi-ip>:8787/`):
+
+1. Each gym has its own section with a checkbox per course. The search box only narrows the list; it doesn't affect the link.
+2. Tick the courses you want. Nothing ticked = all courses.
+3. Tap the `webcal://` link (or **Copy** it) to subscribe. Changing the ticks gives a new link; the old subscription keeps its old filter.
 
 ## Endpoints
-- `GET /` → course picker: tick the courses you want and get a personal subscription link
-- `GET /fitx-<studio>.ics`, `GET /bodyandsoul-<center>.ics` → ICS feeds; add `?course=<title>` (repeatable) to only include those courses
-- `GET /health` → returns `OK` (200)
-- `POST /refresh` → triggers immediate refresh (requires `X-Refresh-Token` header if `REFRESH_TOKEN` is set)
+- `GET /` – course picker
+- `GET /fitx-<studio-id>.ics` – FitX feed, e.g. `/fitx-53.ics`
+- `GET /bodyandsoul-<center>.ics` – body + soul feed, e.g. `/bodyandsoul-sendling.ics`
+- Add `?course=<title>` (repeatable, exact title) to any feed to include only those courses
+- `GET /health` – `OK`
+- `POST /refresh` – refresh all gyms now (needs `X-Refresh-Token` header if `REFRESH_TOKEN` is set)
 
-## Requirements
-- Raspberry Pi OS (Debian) on arm64
-- Docker and Docker Compose
+## Configuration (`.env`)
+| Variable | Default | |
+|---|---|---|
+| `FITX_STUDIOS` | `53` | Comma-separated FitX studio ids. Find an id as the `value` of the studio dropdown on [fitx.de/fitnesskurse](https://www.fitx.de/fitnesskurse) (53 = München Sendling-Westpark, 108 = München-Lenbachplatz). Calendar names come from that dropdown. Legacy `FITX_COURSE_ID` is read as fallback. |
+| `BODYSOUL_CENTERS` | `theresienhoehe,sendling` | Comma-separated center slugs from `bodyandsoul.de/standorte/<slug>/kursangebot-center-<slug>`. Empty disables. |
+| `FITX_WEEKS_AHEAD` | `2` | Weeks of FitX classes to fetch (body + soul publishes ~4 weeks; all are used). |
+| `REFRESH_INTERVAL_SECONDS` | `900` | |
+| `REFRESH_TOKEN` | – | Protects `POST /refresh`. Secret. |
+| `FITX_COOKIE` | – | Optional, never logged. Secret. |
+| `CLOUDFLARED_TOKEN` | – | Cloudflare Tunnel token for the `cloudflared` sidecar. Secret. |
+| `PORT` | `8787` | Host port (container always listens on 8787). |
+| `TZ` | `Europe/Berlin` | |
 
-## Quick Start
-1) Install Docker and Compose on Raspberry Pi (arm64). For Raspberry Pi OS, follow official Docker docs or convenience script.
+## Running on the Pi
+The Pi (armv7) runs the app plus a Cloudflare Tunnel sidecar from `~/fitx-calendar`:
 
-2) Clone or copy this repository onto your Pi.
+```sh
+cp .env.example .env   # then edit
+docker compose -f docker-compose.armv7.yml -f docker-compose.armv7.cloudflared.yml up -d --build
+```
 
-3) Create your environment file:
-   - Copy `.env.example` to `.env`
-   - Adjust values as needed. Defaults work for most cases.
-   - If you have a valid FitX cookie, set `FITX_COOKIE` (optional). Do not share it and note cookies expire.
+`scripts/bootstrap_fitx_pi.sh` automates first-time setup.
 
-4) Start the service:
-   - `docker compose up -d`
+### Deploying an update
+The Pi has no GitHub access, so push from your machine straight to the Pi's checkout, then rebuild:
 
-5) Verify health:
-   - `curl http://<pi-ip>:<PORT>/health` → should return `OK`
+```sh
+git push ssh://pi@<pi-ip>/home/pi/fitx-calendar main:refs/remotes/origin/main
+ssh pi@<pi-ip> 'cd ~/fitx-calendar && git merge --ff-only origin/main && \
+  docker compose -f docker-compose.armv7.yml -f docker-compose.armv7.cloudflared.yml up -d --build'
+```
 
-6) Subscribe on iPhone:
-   - Open: Settings → Calendar → Accounts → Add Account → Other → Add Subscribed Calendar
-   - Open `http://<pi-ip>:<PORT>/`, pick courses, and tap the subscribe link
-
-## Configuration (Environment Variables)
-- `FITX_STUDIOS` (default: `53` = München Sendling-Westpark) – comma-separated FitX studio ids, i.e. the `value` of the studio dropdown on fitx.de/fitnesskurse; each becomes `/fitx-<id>.ics` (legacy `FITX_COURSE_ID` still read as fallback)
-- `PORT` (default: `8787`) – host port; container always listens on 8787
-- `REFRESH_INTERVAL_SECONDS` (default: `900`)
-- `FITX_COOKIE` (optional; NEVER logged)
-- `REFRESH_TOKEN` (optional; protects `/refresh`)
-- `TZ` (default: `Europe/Berlin`)
-- `FITX_USE_KURSPLAN` (default: `true`) – use `/kursplan/<branch>?dateFrom=YYYY-MM-DD` HTML for weekly schedules
-- `BODYSOUL_CENTERS` (default: `theresienhoehe,sendling`) – comma-separated body + soul center slugs as in `bodyandsoul.de/standorte/<slug>/…`; empty disables
-- `FITX_WEEKS_AHEAD` (default: `2`) – how many weeks to fetch starting from the current week when `FITX_USE_KURSPLAN=true`
- - `CLOUDFLARED_TOKEN` (optional) – Cloudflare Tunnel token used by the `cloudflared` sidecar.
-
-## Exposing via Cloudflare Tunnel
-This repo includes an optional `cloudflared` sidecar in `docker-compose.yml`.
-
-Two modes are supported:
-- Quick Tunnel (no domain needed): default when `CLOUDFLARED_TOKEN` is not set. Start with `docker compose up -d`, then run `docker compose logs -f cloudflared` and copy the `https://<random>.trycloudflare.com` URL. Use that URL for `/` and `/health`.
-- Named Tunnel (requires a Cloudflare-managed domain): set up a Tunnel + Public Hostname in the Cloudflare dashboard pointing to `http://localhost:8787` (or `http://fitx-calendar:8787`), set `CLOUDFLARED_TOKEN=...` in `.env`, then `docker compose up -d`. Use your chosen hostname.
-
-## Data Persistence
-- The container uses `/data` for persistence and stores:
-  - `/data/<calendar>.json` – last known good events per calendar
-- In `docker-compose.yml`, this is mounted as a named volume: `fitx_data:/data`.
-- On startup, the server loads any existing cache immediately, then refreshes in the background.
-
-## Refresh Behavior
-- On startup: loads cache (if present), starts HTTP server, and runs a refresh.
-- Background loop repeats every `REFRESH_INTERVAL_SECONDS`.
-- On success: updates disk and in-memory cache atomically.
-- On failure: logs error and keeps serving last known good ICS.
+### Public access (Cloudflare Tunnel)
+With `CLOUDFLARED_TOKEN` set, the tunnel exposes the app at the public hostname configured in the Cloudflare dashboard (pointing to `http://fitx-calendar:8787`). Without a token, cloudflared falls back to a quick tunnel; find its `https://<random>.trycloudflare.com` URL with `docker logs cloudflared`.
 
 ## Troubleshooting
-- Cookie expired: If FitX requires authentication, set a fresh `FITX_COOKIE` in `.env`.
-- Parsing fails: Logs (DEBUG) indicate keys searched and counts. The service continues serving the last good cache.
-- Stale cache: Trigger a manual refresh via `POST /refresh`. If `REFRESH_TOKEN` is set, include header `X-Refresh-Token: <token>`.
-- Connectivity: Ensure your Raspberry Pi can reach `https://www.fitx.de` and your iPhone can reach the Pi over LAN.
+- **Gym section empty / feed stale:** check `docker logs fitx-calendar` for `Refresh of <calendar> failed`. A failure keeps the last good data; an empty section means no successful fetch yet.
+- **Parser broke after a site redesign:** FitX parsing lives in `app/parser.py`, body + soul in `app/bodyandsoul.py`.
+- **Force a refresh:** `curl -X POST http://<pi-ip>:8787/refresh`.
 
-## Development Notes
-- Stack: Python 3.11, FastAPI, Uvicorn, httpx, beautifulsoup4.
-- Manual ICS generation; no heavy calendar libraries.
-- Binds to `0.0.0.0` inside the container so LAN devices can reach it.
+## Development
+Python 3.11, FastAPI, httpx, BeautifulSoup. ICS is generated by hand (`app/ics.py`).
+
+```sh
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+DATA_DIR=./.data .venv/bin/uvicorn app.main:app --port 8787
+.venv/bin/python -m tests.test_bodyandsoul
+```
