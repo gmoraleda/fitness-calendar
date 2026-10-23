@@ -1,11 +1,11 @@
 # Fitness Calendar
 
-Turns gym class schedules into calendar feeds you can subscribe to (iPhone, macOS, Google Calendar). Supports all **FitX** studios and all **body + soul** centers. Each subscriber picks the courses they care about and gets their own feed URL. Runs on a Raspberry Pi with Docker.
+Turns gym class schedules into calendar feeds you can subscribe to (iPhone, macOS, Google Calendar). Supports all **FitX** studios and all **body + soul** centers (via the Eversports schedule API their site embeds). Each subscriber picks the courses they care about and gets their own feed URL. Runs on a Raspberry Pi with Docker.
 
 ## How it works
 - Studios are fetched on demand: the first time someone picks a studio (or a calendar app requests its feed), its schedule is scraped and cached in `/data/<calendar>.json`.
 - Once cached data is older than `REFRESH_INTERVAL_SECONDS` (15 min), the next request serves it immediately and re-fetches in the background. Studios nobody uses are never fetched.
-- Each course's page (description, level, category) is fetched once and cached for a week in `/data/<gym>-courses.json`. The picker groups courses by category and shows the details; calendar events include them in their notes.
+- body + soul classes come with description, level and category from Eversports. For FitX, each course's page is fetched once and cached for a week in `/data/fitx-courses.json`. The picker groups courses by category and shows the details; calendar events include them in their notes.
 - If a gym's site is down or returns nothing, the last good data keeps being served.
 - Feeds are generated on request, so filtering costs nothing and no per-user state is stored.
 
@@ -19,7 +19,7 @@ Open the site root (e.g. `https://ics.moraleda.work/` or `http://<pi-ip>:8787/`)
 ## Endpoints
 - `GET /` – course picker
 - `GET /fitx-<studio-id>.ics` – FitX feed, e.g. `/fitx-53.ics` (id = `value` of the studio dropdown on [fitx.de/fitnesskurse](https://www.fitx.de/fitnesskurse); 53 = München Sendling-Westpark)
-- `GET /bodyandsoul-<center>.ics` – body + soul feed, e.g. `/bodyandsoul-sendling.ics` (centers listed in `BODYSOUL_CENTERS` in `app/main.py`)
+- `GET /bodyandsoul-<center>.ics` – body + soul feed, e.g. `/bodyandsoul-sendling.ics` (centers in `BODYSOUL_CENTERS` in `app/main.py`; their Eversports widget ids, from `data-eversports-widget-id` on `bodyandsoul.de/class-schedule-<center>/`, in `app/bodyandsoul.py`)
 - `GET /api/courses/<calendar>` – course titles for the picker
 - Add `?course=<title>` (repeatable, exact title) to any feed to include only those courses
 - `GET /health` – `OK`
@@ -27,7 +27,7 @@ Open the site root (e.g. `https://ics.moraleda.work/` or `http://<pi-ip>:8787/`)
 ## Configuration (`.env`)
 | Variable | Default | |
 |---|---|---|
-| `FITX_WEEKS_AHEAD` | `2` | Weeks of FitX classes to fetch (body + soul publishes ~4 weeks; all are used). |
+| `FITX_WEEKS_AHEAD` | `2` | Weeks of FitX classes to fetch (body + soul: 4 weeks). |
 | `REFRESH_INTERVAL_SECONDS` | `900` | Max age of a studio's cached classes before re-fetching. |
 | `FITX_COOKIE` | – | Optional, never logged. Secret. |
 | `CLOUDFLARED_TOKEN` | – | Cloudflare Tunnel token for the `cloudflared` sidecar. Secret. |

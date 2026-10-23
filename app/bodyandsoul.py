@@ -1,113 +1,97 @@
 from __future__ import annotations
 
-import re
 from datetime import date, datetime, timedelta
 from typing import List
 
 import httpx
-from bs4 import BeautifulSoup
 from zoneinfo import ZoneInfo
 
-from .fetcher import build_headers
 from .models import CourseEvent
-from .courseinfo import add_info
 
 BERLIN = ZoneInfo("Europe/Berlin")
-MONTHS = {
-    m: i + 1
-    for i, m in enumerate(
-        ["januar", "februar", "märz", "april", "mai", "juni",
-         "juli", "august", "september", "oktober", "november", "dezember"]
-    )
+API = "https://graphql-widget-master.production.eversports.cloud/api/graphql"
+WEEKS_AHEAD = 4
+
+# Center slug -> Eversports schedule widget id (data-eversports-widget-id on
+# bodyandsoul.de/class-schedule-<slug>/).
+WIDGETS = {
+    "brunnthal": "9f03cea9-5780-4237-98be-0cd1ad412893",
+    "englischer-garten": "de0504ab-0fcd-4562-8060-b78353762898",
+    "erding": "1c71b5b3-3da3-4748-a93f-40423b65d9dd",
+    "hirschgarten": "8ab8fb37-87f0-4bb9-b384-a484d8a8d82d",
+    "muenchen-mitte": "1ed4023f-5211-4798-bc07-b25ef3b9b8c4",
+    "muenchen-nord": "0000c822-c6d3-4266-9731-ef09c234d136",
+    "sendling": "6e10bf1e-55fa-4998-abca-0cd930f73506",
+    "theresienhoehe": "e7782813-7b6b-4c19-ad1f-b1930f7ebffe",
+    "trudering": "cc18422b-d3dd-4a82-9d3f-95a6319ac58f",
+    "werk12": "3cf71100-77fe-4ecb-8960-ba47cada1017",
 }
 
-
-def center_url(center: str) -> str:
-    return f"https://www.bodyandsoul.de/standorte/{center}/kursangebot-center-{center}"
+QUERY = """
+query($w: ID!, $t: TimeRangeInput, $after: Cursor) {
+  widget(id: $w) {
+    ... on WidgetActivitySchedule {
+      activities(timeRange: $t, first: 200, after: $after,
+                 activityGroupPublicationStates: [ACTIVE, VIEW_ONLY], isArchived: false) {
+        nodes {
+          id name start end isCancelled detailsPageURL
+          room { name }
+          teacher { name }
+          activityGroup { name level category { name } description { plainText } venue { name } }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+"""
 
 
 async def fetch_center(client: httpx.AsyncClient, center: str) -> List[CourseEvent]:
-    resp = await client.get(
-        center_url(center), headers=build_headers(None), timeout=httpx.Timeout(20.0, connect=10.0)
-    )
-    resp.raise_for_status()
-    events = parse_courseplan(resp.text)
+    today = date.today()
+    variables = {
+        "w": WIDGETS[center],
+        "t": {"start": today.isoformat(), "end": (today + timedelta(weeks=WEEKS_AHEAD)).isoformat()},
+        "after": None,
+    }
+    nodes: list = []
+    while True:
+        resp = await client.post(API, json={"query": QUERY, "variables": variables},
+                                 timeout=httpx.Timeout(20.0, connect=10.0))
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get("errors"):
+            raise ValueError(f"Eversports error for {center}: {body['errors'][0].get('message')}")
+        page = body["data"]["widget"]["activities"]
+        nodes += page["nodes"]
+        if not page["pageInfo"]["hasNextPage"]:
+            break
+        variables["after"] = page["pageInfo"]["endCursor"]
+    events = parse_activities(nodes)
     if not events:
-        # Don't overwrite a good cache with an empty calendar (e.g. site redesign/outage page).
+        # Don't overwrite a good cache with an empty calendar.
         raise ValueError(f"No body+soul courses found for {center}")
-    await add_info(client, "bodyandsoul", events, parse_course_page)
     return events
 
 
-def _week_monday(label: str) -> date:
-    # Labels: "22. - 28 Juni 2026", "29. Juni - 05. Juli 2026". Last date is the Sunday.
-    day, month, year = re.findall(r"(\d{1,2})\.?\s*([^\W\d_]+)\s+(\d{4})", label)[-1]
-    return date(int(year), MONTHS[month.lower()], int(day)) - timedelta(days=6)
-
-
-def parse_courseplan(html: str) -> List[CourseEvent]:
-    soup = BeautifulSoup(html, "html.parser")
-    uniq: dict[tuple, CourseEvent] = {}
-    for slide in soup.select("#courseplaner .week-slide"):
-        monday = _week_monday(slide.select_one(".week").get_text(" ", strip=True))
-        for row in slide.select("tr"):
-            cells = row.find_all("td")
-            if len(cells) != 8:  # time column + Mon..Sun
-                continue
-            for i, cell in enumerate(cells[1:]):
-                day = monday + timedelta(days=i)
-                for a in cell.select("a.course-item"):
-                    meta = [p.strip() for p in a.select_one(".meta").get_text(strip=True).split("|")]
-                    hh, mm = map(int, meta[0].split(":"))
-                    room = meta[1] if len(meta) > 1 else None
-                    dur = re.search(r"\d+", meta[2]) if len(meta) > 2 else None
-                    start = datetime(day.year, day.month, day.day, hh, mm, tzinfo=BERLIN)
-                    end = start + timedelta(minutes=int(dur.group()) if dur else 60)
-                    title = a.select_one(".title").get_text(" ", strip=True)
-                    ev = CourseEvent(
-                        id=f"{title}-{room}",
-                        title=title,
-                        start=start,
-                        end=end,
-                        room=room,
-                        url=a.get("href"),
-                        category=_category(a.get("href")),
-                    )
-                    uniq[(ev.id, start)] = ev
-    return sorted(uniq.values(), key=lambda e: (e.start, e.title))
-
-
-# Category slug in course URLs (.../group-fitness-kursangebot/<slug>/<course>) -> display name.
-CATEGORIES = {
-    "body-mind": "Body & Mind",
-    "workout": "Workout",
-    "choreographie": "Choreographie",
-    "aqua": "Aqua",
-    "cycling": "Cycling",
-    "small-group-training": "Small Group Training",
-    "power-plater": "Power Plate®",
-    "kurskategorie-boostar": "BOOSTAR®",
-    "outdoor": "Outdoor",
-}
-
-
-def _category(url: str | None) -> str | None:
-    m = re.search(r"group-fitness-kursangebot/([^/]+)/", url or "")
-    return CATEGORIES.get(m.group(1), m.group(1).replace("-", " ").title()) if m else None
-
-
-def parse_course_page(html: str) -> dict:
-    """Description, level and category from a course detail page."""
-    soup = BeautifulSoup(html, "html.parser")
-    body = soup.select_one(".ce-bodytext")
-    paras = [" ".join(p.get_text(" ", strip=True).split()).replace(" ®", "®") for p in body.find_all("p")] if body else []
-    level = next(
-        (li.get_text(" ", strip=True) for li in soup.select(".list-icon") if li.select_one("img[src*=level]")),
-        None,
-    )
-    tag = soup.select_one(".box-tags .tag")
-    return {
-        "description": "\n".join(p for p in paras if p) or None,
-        "level": level,
-        "category": tag.get_text(" ", strip=True) if tag else None,
-    }
+def parse_activities(nodes: list) -> List[CourseEvent]:
+    events = []
+    for n in nodes:
+        if n.get("isCancelled"):
+            continue
+        g = n.get("activityGroup") or {}
+        level = g.get("level")
+        events.append(CourseEvent(
+            id=n["id"],
+            title=n.get("name") or g.get("name") or "Kurs",
+            start=datetime.fromisoformat(n["start"]).astimezone(BERLIN),
+            end=datetime.fromisoformat(n["end"]).astimezone(BERLIN),
+            location=(g.get("venue") or {}).get("name"),
+            room=(n.get("room") or {}).get("name"),
+            instructor=(n.get("teacher") or {}).get("name"),
+            category=((g.get("category") or {}).get("name") or "").strip() or None,
+            level=level.replace("_", " ").title() if level else None,
+            description=((g.get("description") or {}).get("plainText") or "").strip() or None,
+            url=n.get("detailsPageURL"),
+        ))
+    return sorted(events, key=lambda e: (e.start, e.title))

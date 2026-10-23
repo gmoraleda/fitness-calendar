@@ -36,7 +36,7 @@ FITX_WEEKS_AHEAD = int(os.environ.get("FITX_WEEKS_AHEAD", "2"))
 FITX_USE_KURSPLAN = os.environ.get("FITX_USE_KURSPLAN", "true").lower() in ("1", "true", "yes")
 STUDIO_LIST_TTL = 24 * 3600
 
-# Slug -> display name. Slugs as in bodyandsoul.de/standorte/<slug>/kursangebot-center-<slug>.
+# Slug -> display name. Widget ids per slug live in app/bodyandsoul.py.
 BODYSOUL_CENTERS = {
     "brunnthal": "Brunnthal",
     "englischer-garten": "Englischer Garten",

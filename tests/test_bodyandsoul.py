@@ -1,19 +1,21 @@
-from app.bodyandsoul import parse_courseplan
+from app.bodyandsoul import parse_activities
 
-ROW = '<tr><td class="times">06:00</td>' + '<td></td>' * 3 + (
-    '<td><a href="/x" class="course-item"><div class="meta">06:45 | Studio 1 | 60 Min.</div>'
-    '<div class="title">HOT IRON® 1</div></a></td>'
-) + '<td></td>' * 3 + '</tr>'
-HTML = f'<div id="courseplaner"><div class="week-slide"><div class="week">29. Juni - 05. Juli&nbsp;2026</div><table>{ROW}</table></div></div>'
+NODE = {
+    "id": "a1", "name": None, "start": "2026-10-26T06:45:00+01:00", "end": "2026-10-26T07:45:00+01:00",
+    "isCancelled": False, "detailsPageURL": "https://www.eversports.de/org/activity/a1",
+    "room": {"name": "Studio 1"}, "teacher": None,
+    "activityGroup": {"name": "HOT IRON® 2", "level": "ALL_LEVELS", "category": {"name": "Workout"},
+                      "description": {"plainText": " Langhantel. "}, "venue": {"name": "body + soul Center Sendling"}},
+}
 
 
-def test_parse_courseplan():
-    [ev] = parse_courseplan(HTML)
-    assert ev.title == "HOT IRON® 1" and ev.room == "Studio 1"
-    assert ev.start.isoformat() == "2026-07-02T06:45:00+02:00"  # Thursday
-    assert ev.end.isoformat() == "2026-07-02T07:45:00+02:00"
+def test_parse_activities():
+    [ev] = parse_activities([NODE, {**NODE, "id": "a2", "isCancelled": True}])
+    assert ev.title == "HOT IRON® 2" and ev.room == "Studio 1" and ev.instructor is None
+    assert ev.start.isoformat() == "2026-10-26T06:45:00+01:00"
+    assert ev.level == "All Levels" and ev.category == "Workout" and ev.description == "Langhantel."
 
 
 if __name__ == "__main__":
-    test_parse_courseplan()
+    test_parse_activities()
     print("ok")
