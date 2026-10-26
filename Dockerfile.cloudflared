@@ -1,0 +1,10 @@
+# Official cloudflare/cloudflared images skip armv7, so wrap the release binary.
+# To upgrade: bump the version and the sha256 (listed in the GitHub release notes).
+FROM arm32v7/debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+ADD --chmod=755 --checksum=sha256:aa3ee5a1fb33de7981075ffa3e07a89895989dcac455d1ee118b561835f6af44 \
+    https://github.com/cloudflare/cloudflared/releases/download/2026.10.4/cloudflared-linux-armhf \
+    /usr/local/bin/cloudflared
+USER nobody
+ENTRYPOINT ["cloudflared", "--no-autoupdate"]
