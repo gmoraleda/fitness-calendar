@@ -14,6 +14,9 @@ def test_parse_activities():
     assert ev.title == "HOT IRON® 2" and ev.room == "Studio 1" and ev.instructor is None
     assert ev.start.isoformat() == "2026-10-26T06:45:00+01:00"
     assert ev.level == "All Levels" and ev.category == "Workout" and ev.description == "Langhantel."
+    assert not ev.booking
+    [booked] = parse_activities([{**NODE, "bookable": {"checkoutURL": "https://www.eversports.de/phoenix"}}])
+    assert booked.booking
 
 
 if __name__ == "__main__":

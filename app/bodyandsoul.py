@@ -35,6 +35,7 @@ query($w: ID!, $t: TimeRangeInput, $after: Cursor) {
                  activityGroupPublicationStates: [ACTIVE, VIEW_ONLY], isArchived: false) {
         nodes {
           id name start end isCancelled detailsPageURL
+          bookable { checkoutURL }
           room { name }
           teacher { name }
           activityGroup { name level category { name } description { plainText } venue { name } }
@@ -93,5 +94,6 @@ def parse_activities(nodes: list) -> List[CourseEvent]:
             level=level.replace("_", " ").title() if level else None,
             description=((g.get("description") or {}).get("plainText") or "").strip() or None,
             url=n.get("detailsPageURL"),
+            booking=n.get("bookable") is not None,
         ))
     return sorted(events, key=lambda e: (e.start, e.title))

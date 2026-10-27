@@ -10,10 +10,10 @@ from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Dict, List, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
 
-from . import bodyandsoul
+from . import bodyandsoul, stats
 from .fetcher import fetch_course_page, fetch_fitx_studios, fetch_kursplan_html
 from .ics import generate_ics
 from .models import CourseEvent
@@ -183,18 +183,26 @@ async def courses(name: str) -> dict:
     first = {}
     for e in cal.events:
         first.setdefault(e.title, e)
+    booking = {e.title for e in cal.events if e.booking}
     return {
         "title": cal.title,
         "courses": [
-            {"title": t, "category": e.category, "level": e.level, "description": e.description, "url": e.url}
+            {"title": t, "category": e.category, "level": e.level, "description": e.description, "url": e.url,
+             "booking": t in booking}
             for t, e in sorted(first.items(), key=lambda kv: kv[0].lower())
         ],
     }
 
 
 @app.get("/{name}.ics")
-async def ics_feed(name: str, course: List[str] = Query(default=[])) -> Response:
+async def ics_feed(
+    request: Request, name: str, course: List[str] = Query(default=[]), sub: Optional[str] = None
+) -> Response:
     cal = await get_calendar(name)
+    try:
+        stats.record(cal.title, course, request.headers.get("user-agent", ""), sub, str(request.url))
+    except Exception:
+        logger.exception("Could not record stats")  # never break the feed over stats
     events = cal.events
     if course:
         wanted = set(course)
@@ -203,6 +211,11 @@ async def ics_feed(name: str, course: List[str] = Query(default=[])) -> Response
         content=generate_ics(cal.name, events, cal.title),
         media_type="text/calendar; charset=utf-8",
     )
+
+
+@app.get("/stats", response_class=HTMLResponse)
+async def stats_page() -> str:
+    return stats.page()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -269,6 +282,7 @@ select:focus, .q:focus { border-color: var(--accent); box-shadow: 0 0 0 3px colo
 .line input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .title { font-weight: 500; }
 .level { font: 11px var(--mono); color: var(--muted); white-space: nowrap; }
+.tag { font: 11px var(--mono); color: var(--accent); white-space: nowrap; }
 .more { flex: none; font: 12px var(--mono); color: var(--muted); background: none; border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; cursor: pointer; }
 .more[aria-expanded="true"] { color: var(--fg); border-color: var(--muted); }
 .desc { margin: 0 0 12px 30px; font: 400 16px/1.55 var(--serif); color: var(--muted); white-space: pre-line; }
@@ -375,10 +389,11 @@ function pickGym(id, scroll) {
     card.replaceChildren(document.getElementById('tpl').content.cloneNode(true));
     const list = card.querySelector('.list'), link = card.querySelector('.link'), status = card.querySelector('.status');
     const count = card.querySelector('.count');
+    const sub = Math.random().toString(36).slice(2, 10);  // anonymous id so /stats counts each subscription once
     const update = () => {
       const picked = [...list.querySelectorAll('input:checked')];
-      const qs = picked.map(b => 'course=' + encodeURIComponent(b.value)).join('&');
-      link.href = card.querySelector('.url').textContent = 'webcal://' + location.host + '/' + name + '.ics' + (qs ? '?' + qs : '');
+      const qs = ['sub=' + sub, ...picked.map(b => 'course=' + encodeURIComponent(b.value))].join('&');
+      link.href = card.querySelector('.url').textContent = 'webcal://' + location.host + '/' + name + '.ics?' + qs;
       count.textContent = picked.length ? picked.length + ' selected' : 'all courses';
     };
     update();
@@ -401,6 +416,7 @@ function pickGym(id, scroll) {
         const cb = el('input', { type: 'checkbox', value: c.title });
         const line = el('div', { className: 'line' },
           el('label', {}, cb, el('span', { className: 'title', textContent: c.title })),
+          ...(c.booking ? [el('span', { className: 'tag', textContent: '🎟 Booking' })] : []),
           ...(c.level ? [el('span', { className: 'level', textContent: c.level })] : []));
         const row = el('div', { className: 'row' }, line);
         if (c.description || c.url) {

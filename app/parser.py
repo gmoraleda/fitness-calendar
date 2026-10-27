@@ -351,6 +351,7 @@ def _parse_kursplan_html(soup: BeautifulSoup) -> List[CourseEvent]:
                     room=None,
                     description=None,
                     url=f"https://www.fitx.de{href}" if href and href.startswith("/") else href,
+                    booking=entry.select_one(".courses_plan__slots_available") is not None,  # "11/14 Plätze frei"
                 )
             )
 

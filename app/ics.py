@@ -82,9 +82,9 @@ def generate_ics(uid_prefix: str, events: Iterable[CourseEvent], name: str | Non
         lines.append(f"DTSTAMP:{_fmt_dt_utc(now)}")
         lines.append(f"DTSTART;TZID=Europe/Berlin:{_fmt_local(ev.start)}")
         lines.append(f"DTEND;TZID=Europe/Berlin:{_fmt_local(ev.end)}")
-        lines.append(f"SUMMARY:{_escape_ics(ev.title)}")
+        lines.append(f"SUMMARY:{_escape_ics(('🎟 ' if ev.booking else '') + ev.title)}")
 
-        desc_parts: List[str] = []
+        desc_parts: List[str] = ["Booking required"] if ev.booking else []
         if ev.instructor:
             desc_parts.append(f"Instructor: {ev.instructor}")
         if ev.room:

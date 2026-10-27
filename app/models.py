@@ -18,4 +18,5 @@ class CourseEvent:
     category: Optional[str] = None
     level: Optional[str] = None
     url: Optional[str] = None
+    booking: bool = False  # needs a reserved spot
 

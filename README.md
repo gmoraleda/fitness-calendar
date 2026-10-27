@@ -7,7 +7,8 @@ Turns gym class schedules into calendar feeds you can subscribe to (iPhone, macO
 - Once cached data is older than `REFRESH_INTERVAL_SECONDS` (15 min), the next request serves it immediately and re-fetches in the background. Studios nobody uses are never fetched.
 - body + soul classes come with description, level and category from Eversports. For FitX, each course's page is fetched once and cached for a week in `/data/fitx-courses.json`. The picker groups courses by category and shows the details; calendar events include them in their notes.
 - If a gym's site is down or returns nothing, the last good data keeps being served.
-- Feeds are generated on request, so filtering costs nothing and no per-user state is stored.
+- Courses that need a reserved spot (body + soul: bookable on Eversports; FitX: limited "Plätze frei") get a 🎟 in the event title and a "Booking required" note. For body + soul the event link is the Eversports page with the **Book now** button; for FitX it's the course info page, not a booking page.
+- Feeds are generated on request, so filtering costs nothing. The only stored state is anonymous subscription stats in `/data/stats.json` (calendar, chosen courses, calendar app; no IPs). Subscribe links carry a random `sub` id so each subscription counts once.
 
 ## Using it
 Open the site root (e.g. `https://ics.moraleda.work/` or `http://<pi-ip>:8787/`):
@@ -22,6 +23,7 @@ Open the site root (e.g. `https://ics.moraleda.work/` or `http://<pi-ip>:8787/`)
 - `GET /bodyandsoul-<center>.ics` – body + soul feed, e.g. `/bodyandsoul-sendling.ics` (centers in `BODYSOUL_CENTERS` in `app/main.py`; their Eversports widget ids, from `data-eversports-widget-id` on `bodyandsoul.de/class-schedule-<center>/`, in `app/bodyandsoul.py`)
 - `GET /api/courses/<calendar>` – course titles for the picker
 - Add `?course=<title>` (repeatable, exact title) to any feed to include only those courses
+- `GET /stats` – active subscriptions (feeds fetched in the last 14 days) per studio, course and calendar app
 - `GET /health` – `OK`
 
 ## Configuration (`.env`)
