@@ -303,8 +303,8 @@ body { margin: 0; font: 15px/1.6 var(--sans); color: var(--fg); background: var(
 .bar { position: sticky; top: 0; z-index: 2; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
 .bar div, main { max-width: 720px; margin: 0 auto; padding: 0 16px; }
 .bar div { height: 52px; display: flex; align-items: center; font-weight: 500; font-size: 14px; }
-.coffee { margin-left: auto; font: 600 13px var(--sans); color: #000; background: #fd0; padding: 6px 12px; border-radius: 8px; text-decoration: none; white-space: nowrap; }
-.coffee:hover { background: #ffe44d; }
+.coffee { margin-left: auto; font: 500 12px var(--sans); color: var(--muted); border: 1px solid var(--border); padding: 4px 10px; border-radius: 999px; text-decoration: none; white-space: nowrap; }
+.coffee:hover { color: var(--fg); border-color: var(--muted); }
 .hero { padding: 56px 0 40px; }
 .free { display: inline-block; font: 500 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; margin: 0 0 20px; }
 .tagline { font: italic 17px var(--serif); color: var(--accent); margin: 0 0 8px; }
@@ -359,6 +359,8 @@ select:focus, .q:focus { border-color: var(--accent); box-shadow: 0 0 0 3px colo
 .step .card { margin-top: 0; }
 @media (max-width: 520px) { .step { grid-template-columns: 1fr; } .n { font-size: 28px; margin-bottom: 8px; } }
 footer { padding: 24px 0 56px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+footer a { color: var(--link); text-decoration: none; }
+footer a:hover { text-decoration: underline; text-underline-offset: 3px; }
 @media (max-width: 520px) { .level { display: none; } .card { padding: 16px; } }
 </style></head><body>
 <div class="bar"><div>Fitness Calendar<a class="coffee" href="https://buymeacoffee.com/moraleda" target="_blank" rel="noopener">☕ Buy me a coffee</a></div></div>
@@ -388,7 +390,8 @@ footer { padding: 24px 0 56px; border-top: 1px solid var(--border); font-size: 1
     </div></li>
   </ol>
 
-  <footer>Timetables are refreshed from the gyms' websites every 15 minutes.</footer>
+  <footer>Timetables are refreshed from the gyms' websites every 15 minutes.<br>
+    Free and ad-free. If it saves you time, <a href="https://buymeacoffee.com/moraleda" target="_blank" rel="noopener">buy me a coffee ☕</a>.</footer>
 </main>
 
 <template id="tpl">
