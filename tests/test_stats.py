@@ -20,6 +20,10 @@ def test_stats():
     assert ("yoga", "FitX A") in dict(s["courses"]) and dict(s["clients"]) == {"Apple Calendar": 1, "Google Calendar": 2}
     assert stats.summary(now=stats.time.time() + stats.ACTIVE + 1)["total"] == 0  # unsubscribed after 14 quiet days
     assert "<h1>3</h1>" in stats.page() and stats.PATH.exists()
+    # An OS update changes the UA's versions; still the same old (no sub id) subscription.
+    stats.record("FitX C", [], "iOS/17.2 (21C62) dataaccessd/1.0", None, "u4")
+    stats.record("FitX C", [], "iOS/18.1 (22B83) dataaccessd/1.0", None, "u4")
+    assert stats.summary()["total"] == 4
 
 
 if __name__ == "__main__":

@@ -31,7 +31,9 @@ _saved = 0.0
 def record(calendar: str, courses: List[str], user_agent: str, sub: Optional[str], url: str) -> None:
     global _saved
     if not (sub and re.fullmatch(r"[a-z0-9]{4,16}", sub)):
-        sub = hashlib.sha1(f"{user_agent} {url}".encode()).hexdigest()[:12]
+        # Drop version numbers ("iOS/17.2 (21C62)"): an OS update shouldn't look like a new subscription.
+        ua = re.sub(r"\([^)]*\)|[\d.]+", "", user_agent)
+        sub = hashlib.sha1(f"{ua} {url}".encode()).hexdigest()[:12]
     now = time.time()
     old = subs.get(sub)
     subs[sub] = {
