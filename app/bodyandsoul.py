@@ -68,11 +68,7 @@ async def fetch_center(client: httpx.AsyncClient, center: str) -> List[CourseEve
         if not page["pageInfo"]["hasNextPage"]:
             break
         variables["after"] = page["pageInfo"]["endCursor"]
-    events = parse_activities(nodes)
-    if not events:
-        # Don't overwrite a good cache with an empty calendar.
-        raise ValueError(f"No body+soul courses found for {center}")
-    return events
+    return parse_activities(nodes)
 
 
 def parse_activities(nodes: list) -> List[CourseEvent]:

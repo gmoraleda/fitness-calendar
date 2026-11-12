@@ -4,16 +4,19 @@ import asyncio
 import html
 import json
 import logging
+import mimetypes
 import os
 import time
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable, Dict, List, Optional
+from pathlib import Path
+from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
-from . import bodyandsoul, stats
+from . import bodyandsoul, elements, fitnessfirst, stats
 from .fetcher import fetch_course_page, fetch_fitx_studios, fetch_kursplan_html
 from .ics import generate_ics
 from .models import CourseEvent
@@ -34,6 +37,7 @@ FITX_COOKIE = os.environ.get("FITX_COOKIE")
 TZ = os.environ.get("TZ", "Europe/Berlin")
 FITX_WEEKS_AHEAD = int(os.environ.get("FITX_WEEKS_AHEAD", "2"))
 FITX_USE_KURSPLAN = os.environ.get("FITX_USE_KURSPLAN", "true").lower() in ("1", "true", "yes")
+NTFY_URL = os.environ.get("NTFY_URL")  # e.g. https://ntfy.sh/<hard-to-guess-topic>; unset = no alerts
 STUDIO_LIST_TTL = 24 * 3600
 
 # Slug -> display name. Widget ids per slug live in app/bodyandsoul.py.
@@ -59,9 +63,12 @@ except Exception:
 
 
 app = FastAPI()
+mimetypes.add_type("font/woff2", ".woff2")  # unknown to python:3.11-slim
+app.mount("/fonts", StaticFiles(directory=Path(__file__).parent / "fonts"), name="fonts")  # self-hosted: no Google
 client: Optional[httpx.AsyncClient] = None
-fitx_studios: Dict[int, str] = {}  # id -> name, from the dropdown on fitx.de/fitnesskurse
-fitx_studios_at = 0.0
+# Gyms with hundreds of studios load their studio list (id -> name) from their site, refreshed daily.
+STUDIO_LISTS = {"fitx": fetch_fitx_studios, "fitnessfirst": fitnessfirst.fetch_clubs}
+studio_lists: Dict[str, Tuple[float, Dict[int, str]]] = {}  # gym -> (last attempt, studios)
 
 
 def _tz_berlin():
@@ -90,16 +97,33 @@ async def _fetch_fitx(studio: int) -> List[CourseEvent]:
     return events
 
 
-async def _load_fitx_studios() -> Dict[int, str]:
-    global fitx_studios, fitx_studios_at
-    if time.time() - fitx_studios_at > STUDIO_LIST_TTL:
-        fitx_studios_at = time.time()  # also throttles retries when fitx.de is down
+async def notify(title: str, message: str, tags: str = "warning") -> None:
+    """Push an alert to ntfy (a parser broke or a gym's site is down). Never raises."""
+    if not (NTFY_URL and client):
+        return
+    try:
+        # Query params rather than headers: titles can hold non-latin-1 characters like "–".
+        r = await client.post(NTFY_URL, params={"title": title, "tags": tags}, content=message[:1000], timeout=10)
+        r.raise_for_status()
+    except Exception as e:
+        logger.warning("Could not send ntfy alert: %s", e)
+
+
+async def _load_studios(gym: str) -> Dict[int, str]:
+    at, studios = studio_lists.get(gym, (0.0, {}))
+    if time.time() - at > STUDIO_LIST_TTL:
+        studio_lists[gym] = (time.time(), studios)  # also throttles retries (and alerts) to once a day
         try:
-            fitx_studios = await fetch_fitx_studios(client)
-            logger.info("Loaded %d FitX studios", len(fitx_studios))
+            fresh = await STUDIO_LISTS[gym](client)
+            if not fresh:
+                raise ValueError("no studios found")
+            studios = fresh
+            studio_lists[gym] = (time.time(), studios)
+            logger.info("Loaded %d %s studios", len(studios), gym)
         except Exception as e:
-            logger.warning("Could not load FitX studio list: %s", e)
-    return fitx_studios
+            logger.warning("Could not load %s studio list: %s", gym, e)
+            await notify(f"{gym} studio list failing", f"{type(e).__name__}: {e}\nKeeping {len(studios)} known studios.")
+    return studios
 
 
 class Calendar:
@@ -111,6 +135,7 @@ class Calendar:
         self.checked_at = cache_mtime(name)  # last fetch attempt (successful or not)
         self.lock = asyncio.Lock()
         self.task: Optional[asyncio.Task] = None
+        self.failing = False  # alert once when refreshes start failing, once when they recover
 
     async def refresh(self) -> None:
         async with self.lock:
@@ -119,12 +144,23 @@ class Calendar:
             self.checked_at = time.time()
             try:
                 events = await self.fetch()
+                if not events:
+                    raise ValueError("no courses found")  # parser broke or site empty; don't cache an empty calendar
                 uniq = {(e.id, int(e.start.timestamp()), int(e.end.timestamp())): e for e in events}
                 self.events = sorted(uniq.values(), key=lambda e: (e.start, e.title))
                 save_cache(self.name, self.events)
                 logger.info("Refreshed %s: %d events", self.name, len(self.events))
             except Exception as e:
                 logger.error("Refresh of %s failed, keeping last good data: %s", self.name, e)
+                if not self.failing:
+                    self.failing = True
+                    await notify(f"{self.title}: refresh failing", f"{self.name}: {type(e).__name__}: {e}\n"
+                                 f"Serving the last good data ({len(self.events)} classes).")
+            else:
+                if self.failing:
+                    self.failing = False
+                    await notify(f"{self.title}: back to normal", f"{self.name}: {len(self.events)} classes",
+                                 "white_check_mark")
 
 
 calendars: Dict[str, Calendar] = {}
@@ -132,16 +168,20 @@ calendars: Dict[str, Calendar] = {}
 
 async def _make_calendar(name: str) -> Calendar:
     gym, _, key = name.partition("-")
-    if gym == "fitx" and key.isdigit():
-        studios = await _load_fitx_studios()
+    if gym in STUDIO_LISTS and key.isdigit():
+        studios = await _load_studios(gym)
         sid = int(key)
         if studios and sid not in studios:
-            raise HTTPException(status_code=404, detail="Unknown FitX studio")
-        return Calendar(name, f"FitX {studios.get(sid, sid)}", lambda: _fetch_fitx(sid))
+            raise HTTPException(status_code=404, detail="Unknown studio")
+        if gym == "fitx":
+            return Calendar(name, f"FitX {studios.get(sid, sid)}", lambda: _fetch_fitx(sid))
+        return Calendar(name, f"Fitness First {studios.get(sid, sid)}", lambda: fitnessfirst.fetch_club(client, sid))
     if gym == "bodyandsoul" and key in BODYSOUL_CENTERS:
         return Calendar(
             name, f"body + soul {BODYSOUL_CENTERS[key]}", lambda: bodyandsoul.fetch_center(client, key)
         )
+    if gym == "elements" and key in elements.STUDIOS:
+        return Calendar(name, f"ELEMENTS {elements.STUDIOS[key]}", lambda: elements.fetch_studio(client, key))
     raise HTTPException(status_code=404, detail="Unknown calendar")
 
 
@@ -163,7 +203,7 @@ async def on_startup() -> None:
     global client
     ensure_data_dir()
     client = httpx.AsyncClient(http2=False, headers={})
-    await _load_fitx_studios()
+    await asyncio.gather(*map(_load_studios, STUDIO_LISTS))
 
 
 @app.on_event("shutdown")
@@ -220,15 +260,20 @@ async def stats_page() -> str:
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> str:
-    studios = await _load_fitx_studios()
+    fitx, ff = await asyncio.gather(_load_studios("fitx"), _load_studios("fitnessfirst"))
 
     def opts(prefix: str, items: Dict) -> list:
         return [[f"{prefix}-{k}", v] for k, v in sorted(items.items(), key=lambda kv: kv[1].lower())]
 
     gyms = {
-        "bodyandsoul": {"name": "body + soul", "note": f"{len(BODYSOUL_CENTERS)} centers in and around München",
-                        "options": opts("bodyandsoul", BODYSOUL_CENTERS)},
-        "fitx": {"name": "FitX", "note": f"{len(studios)} studios across Germany", "options": opts("fitx", studios)},
+        "bodyandsoul": {"name": "body + soul", "unit": "center", "options": opts("bodyandsoul", BODYSOUL_CENTERS),
+                        "note": f"{len(BODYSOUL_CENTERS)} centers in and around München"},
+        "elements": {"name": "ELEMENTS", "unit": "studio", "options": opts("elements", elements.STUDIOS),
+                     "note": f"{len(elements.STUDIOS)} studios in München, Frankfurt and Stuttgart"},
+        "fitx": {"name": "FitX", "unit": "studio", "note": f"{len(fitx)} studios across Germany",
+                 "options": opts("fitx", fitx)},
+        "fitnessfirst": {"name": "Fitness First", "unit": "club", "note": f"{len(ff)} clubs in Germany and Wien",
+                         "options": opts("fitnessfirst", ff)},
     }
     # "</" escaped so studio names can never close the <script> tag.
     return PAGE.replace("{{GYMS}}", json.dumps(gyms, ensure_ascii=False).replace("</", "<\\/"))
@@ -238,9 +283,11 @@ PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Fitness Calendar</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
 <style>
+@font-face { font-family: "Inter"; font-weight: 400 600; font-display: swap; src: url(/fonts/inter.woff2) format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 400 500; font-display: swap; src: url(/fonts/jetbrains-mono.woff2) format("woff2"); }
+@font-face { font-family: "Newsreader"; font-weight: 400 500; font-display: swap; src: url(/fonts/newsreader.woff2) format("woff2"); }
+@font-face { font-family: "Newsreader"; font-style: italic; font-weight: 400; font-display: swap; src: url(/fonts/newsreader-italic.woff2) format("woff2"); }
 :root {
   color-scheme: light dark;
   --bg: #f9fafb; --surface: #fff; --card-a: #fbf9f6; --card-b: #f4efe9; --border: #e5e7eb;
@@ -256,7 +303,10 @@ body { margin: 0; font: 15px/1.6 var(--sans); color: var(--fg); background: var(
 .bar { position: sticky; top: 0; z-index: 2; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
 .bar div, main { max-width: 720px; margin: 0 auto; padding: 0 16px; }
 .bar div { height: 52px; display: flex; align-items: center; font-weight: 500; font-size: 14px; }
+.coffee { margin-left: auto; font: 600 13px var(--sans); color: #000; background: #fd0; padding: 6px 12px; border-radius: 8px; text-decoration: none; white-space: nowrap; }
+.coffee:hover { background: #ffe44d; }
 .hero { padding: 56px 0 40px; }
+.free { display: inline-block; font: 500 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; margin: 0 0 20px; }
 .tagline { font: italic 17px var(--serif); color: var(--accent); margin: 0 0 8px; }
 h1 { font: 400 clamp(34px, 6vw, 46px)/1.1 var(--serif); letter-spacing: -0.015em; margin: 0 0 16px; }
 h1 em, h2 em { color: var(--accent); }
@@ -300,7 +350,7 @@ select:focus, .q:focus { border-color: var(--accent); box-shadow: 0 0 0 3px colo
 .step[hidden] { display: none; }
 .n { font: 400 38px/1 var(--serif); color: var(--accent); }
 .step h2 { margin-bottom: 16px; }
-.chains { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.chains { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
 .chain { text-align: left; font: inherit; color: inherit; cursor: pointer; padding: 18px 20px; border: 1px solid var(--border); border-radius: 14px; background: linear-gradient(160deg, var(--card-a), var(--card-b)); transition: border-color .15s, box-shadow .15s; }
 .chain:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
 .chain[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
@@ -311,9 +361,10 @@ select:focus, .q:focus { border-color: var(--accent); box-shadow: 0 0 0 3px colo
 footer { padding: 24px 0 56px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }
 @media (max-width: 520px) { .level { display: none; } .card { padding: 16px; } }
 </style></head><body>
-<div class="bar"><div>Fitness Calendar</div></div>
+<div class="bar"><div>Fitness Calendar<a class="coffee" href="https://buymeacoffee.com/moraleda" target="_blank" rel="noopener">☕ Buy me a coffee</a></div></div>
 <main>
   <div class="hero">
+    <p class="free">Free to use · No tracking</p>
     <p class="tagline">Group classes, on your schedule</p>
     <h1>Your gym's classes, <em>in your calendar.</em></h1>
     <p class="lede">Pick a studio, choose the courses you like and subscribe. Your calendar stays up to date as the timetable changes. Nothing selected means every course.</p>
@@ -372,8 +423,8 @@ function pickGym(id, scroll) {
   store.set('gym', id);
   chains.querySelectorAll('.chain').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.gym === id)));
   const g = GYMS[id];
-  locationStep.querySelector('h2 em').textContent = id === 'fitx' ? 'studio' : 'center';
-  select.replaceChildren(el('option', { value: '', textContent: 'Select a ' + g.name + (id === 'fitx' ? ' studio…' : ' center…') }),
+  locationStep.querySelector('h2 em').textContent = g.unit;
+  select.replaceChildren(el('option', { value: '', textContent: 'Select your ' + g.name + ' ' + g.unit + '…' }),
                          ...g.options.map(([v, n]) => el('option', { value: v, textContent: n })));
   locationStep.hidden = false;
   const saved = store.get('studio-' + id);
